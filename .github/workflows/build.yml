@@ -1,0 +1,145 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Set Development Team
+        if: env.DEVELOPMENT_TEAM_ID != ''
+        run: |
+          sed -i '' "s/DEVELOPMENT_TEAM = \"\"/DEVELOPMENT_TEAM = \"$DEVELOPMENT_TEAM_ID\"/" PureVisioniOS.xcodeproj/project.pbxproj
+        env:
+          DEVELOPMENT_TEAM_ID: ${{ secrets.DEVELOPMENT_TEAM_ID }}
+
+      - name: Build Archive
+        run: |
+          xcodebuild archive \
+            -project PureVisioniOS.xcodeproj \
+            -scheme PureVisioniOS \
+            -configuration Release \
+            -archivePath ${{ github.workspace }}/build/PureVisioniOS.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-Apple Development}" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="${{ secrets.DEVELOPMENT_TEAM_ID }}" \
+            ENABLE_BITCODE=NO \
+            MARKETING_VERSION=1.0.0 \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            | xcpretty
+
+      - name: Export IPA
+        run: |
+          cat > /tmp/ExportOptions.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>ad-hoc</string>
+              <key>teamID</key>
+              <string>${{ secrets.DEVELOPMENT_TEAM_ID }}</string>
+              <key>uploadBitcode</key>
+              <false/>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>compileBitcode</key>
+              <false/>
+              <key>signingStyle</key>
+              <string>automatic</string>
+              <key>stripSwiftSymbols</key>
+              <true/>
+              <key>destination</key>
+              <string>export</string>
+              <key>manageAppVersionAndBuildNumber</key>
+              <false/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath ${{ github.workspace }}/build/PureVisioniOS.xcarchive \
+            -exportOptionsPlist /tmp/ExportOptions.plist \
+            -exportPath ${{ github.workspace }}/build/ipa \
+            | xcpretty
+
+      - name: Verify IPA
+        run: |
+          ls -lh ${{ github.workspace }}/build/ipa/
+          if [ -f "${{ github.workspace }}/build/ipa/PureVisioniOS.ipa" ]; then
+            echo "IPA built successfully!"
+          else
+            echo "IPA not found, falling back to zip method"
+            cd ${{ github.workspace }}/build/PureVisioniOS.xcarchive/Products
+            zip -r -q ${{ github.workspace }}/build/ipa/PureVisioniOS.ipa Applications/
+          fi
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PureVisioniOS-v${{ github.run_number }}
+          path: build/ipa/PureVisioniOS.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: PureVisioniOS-v${{ github.run_number }}
+          path: artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Pure Vision iOS v1.0.${{ github.run_number }}"
+          body: |
+            ## Pure Vision iOS
+
+            Real-time face and body censoring for iPhone and iPad.
+
+            ### Install the IPA
+            1. Download `PureVisioniOS.ipa` below
+            2. Sideload using [AltStore](https://altstore.io), [Sideloadly](https://sideloadly.io), or [TrollStore](https://github.com/opa334/TrollStore)
+
+            ### Features
+            - Real-time camera face/body detection using Apple Vision
+            - 5 censor styles: Blur, Pixelate, Mosaic, Black Bar, Darken
+            - Photo library import & export
+            - Adjustable intensity & detection targets
+          files: artifacts/PureVisioniOS.ipa
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
