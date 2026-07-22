@@ -49,11 +49,14 @@ jobs:
 
       - name: Create IPA from Archive
         run: |
-          mkdir -p build/ipa
-          cd build/PureVisioniOS.xcarchive/Products
-          zip -r -q $GITHUB_WORKSPACE/build/ipa/PureVisioniOS.ipa Applications/
+          mkdir -p build/ipa/Payload
+          cp -R build/PureVisioniOS.xcarchive/Products/Applications/PureVisioniOS.app build/ipa/Payload/
+          cd build/ipa
+          zip -r -q ../PureVisioniOS.ipa Payload/
+          mv ../PureVisioniOS.ipa .
           echo "IPA created successfully"
-          ls -lh $GITHUB_WORKSPACE/build/ipa/
+          ls -lh PureVisioniOS.ipa
+          unzip -l PureVisioniOS.ipa | head -20
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
