@@ -10,7 +10,7 @@ struct OverlayView: View {
         GeometryReader { geometry in
             ZStack {
                 ForEach(detections) { detection in
-                    let rect = VNNormalizedRectToCGRect(detection.boundingBox, in: geometry.size)
+                    let rect = normalizeRect(detection.boundingBox, in: geometry.size)
 
                     Group {
                         switch censorType {
@@ -34,6 +34,15 @@ struct OverlayView: View {
         }
     }
 
+    private func normalizeRect(_ boundingBox: CGRect, in size: CGSize) -> CGRect {
+        CGRect(
+            x: boundingBox.origin.x * size.width,
+            y: (1 - boundingBox.origin.y - boundingBox.height) * size.height,
+            width: boundingBox.width * size.width,
+            height: boundingBox.height * size.height
+        )
+    }
+
     private func censorBlur(rect: CGRect) -> some View {
         VisualEffectBlur(style: .systemUltraThinMaterial)
             .frame(width: rect.width, height: rect.height)
@@ -42,13 +51,15 @@ struct OverlayView: View {
     }
 
     private func censorPixelate(rect: CGRect) -> some View {
-        ZStack {
-            ForEach(0..<16, id: \.self) { i in
-                let cols = 4
-                let row = i / cols
+        let cols = 4
+        let rows = 4
+
+        return ZStack {
+            ForEach(0..<(cols * rows), id: \.self) { i in
                 let col = i % cols
+                let row = i / cols
                 let cellW = rect.width / CGFloat(cols)
-                let cellH = rect.height / CGFloat(4)
+                let cellH = rect.height / CGFloat(rows)
                 let gray = Double.random(in: 0.2...0.8)
 
                 Rectangle()
@@ -60,18 +71,19 @@ struct OverlayView: View {
                     )
             }
         }
-        .clipped()
         .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
+        .clipped()
     }
 
     private func censorMosaic(rect: CGRect) -> some View {
         let blockSize: CGFloat = 12
-        let cols = Int(rect.width / blockSize)
-        let rows = Int(rect.height / blockSize)
+        let cols = max(1, Int(rect.width / blockSize))
+        let rows = max(1, Int(rect.height / blockSize))
+        let count = min(cols * rows, 150)
 
         return ZStack {
-            ForEach(0..<min(rows * cols, 200), id: \.self) { i in
+            ForEach(0..<count, id: \.self) { i in
                 let col = i % cols
                 let row = i / cols
                 let gray = Double.random(in: 0.15...0.85)
@@ -85,9 +97,9 @@ struct OverlayView: View {
                     )
             }
         }
-        .clipped()
         .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
+        .clipped()
     }
 
     private func censorBlackBar(rect: CGRect) -> some View {
@@ -129,13 +141,4 @@ struct VisualEffectBlur: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIVisualEffectView, context: Context) {}
-}
-
-func VNNormalizedRectToCGRect(_ rect: VNNormalizedRect, in size: CGSize) -> CGRect {
-    CGRect(
-        x: rect.origin.x * size.width,
-        y: (1 - rect.origin.y - rect.height) * size.height,
-        width: rect.size.width * size.width,
-        height: rect.size.height * size.height
-    )
 }

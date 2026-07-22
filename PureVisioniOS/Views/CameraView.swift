@@ -4,14 +4,14 @@ import AVFoundation
 struct CameraView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var outputDelegate = CameraOutputDelegate()
-    @StateObject private var faceDetector = FaceDetector.shared
 
     @State private var cameraManager: CameraManager?
     @State private var detections: [DetectionResult] = []
     @State private var frameCount: Int = 0
     @State private var lastFPSTime = Date()
     @State private var currentFPS: Double = 0
-    @State private var showPermissionAlert = false
+
+    let timer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
 
     var body: some View {
         GeometryReader { geometry in
@@ -19,7 +19,7 @@ struct CameraView: View {
                 Color.black.ignoresSafeArea()
 
                 if let manager = cameraManager, manager.authorizationStatus == .authorized {
-                    CameraPreviewView(cameraManager: manager)
+                    CameraPreviewView(session: manager.session)
                         .ignoresSafeArea()
 
                     OverlayView(
@@ -93,7 +93,7 @@ struct CameraView: View {
                                     )
                             }
 
-                            Button(action: { capturePhoto() }) {
+                            Button(action: {}) {
                                 Image(systemName: "camera.fill")
                                     .font(.title2)
                                     .foregroundColor(.white)
@@ -136,45 +136,28 @@ struct CameraView: View {
         .onDisappear {
             cameraManager?.stopSession()
         }
-        .alert("Camera Access", isPresented: $showPermissionAlert) {
-            Button("Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Pure Vision needs camera access to detect and censor faces in real time.")
+        .onReceive(timer) { _ in
+            processFrame()
         }
     }
 
     private func setupCamera() {
-        let delegate = outputDelegate
-        let manager = CameraManager(delegate: delegate)
+        let manager = CameraManager(delegate: outputDelegate)
         self.cameraManager = manager
-
         manager.checkAuthorization()
-
-        if manager.authorizationStatus == .authorized {
-            manager.setupCamera()
-            manager.startSession()
-        }
-
-        setupFrameProcessing()
     }
 
-    private func setupFrameProcessing() {
-        Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { _ in
-            guard appState.isEnabled, let pixelBuffer = outputDelegate.latestPixelBuffer else { return }
+    private func processFrame() {
+        guard appState.isEnabled,
+              let manager = cameraManager,
+              manager.isRunning,
+              let pixelBuffer = outputDelegate.latestPixelBuffer else { return }
 
-            FaceDetector.shared.detect(in: pixelBuffer, target: appState.detectionTarget) { results in
-                self.detections = results
-                updateFPS()
-            }
+        FaceDetector.shared.detect(in: pixelBuffer, target: appState.detectionTarget) { results in
+            self.detections = results
+            updateFPS()
         }
     }
-
-    private func capturePhoto() {}
 
     private func updateFPS() {
         frameCount += 1

@@ -9,29 +9,32 @@ class CameraManager: NSObject, ObservableObject {
     @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
     @Published var cameraPosition: AVCaptureDevice.Position = .back
 
-    private let session = AVCaptureSession()
+    let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let processingQueue = DispatchQueue(label: "com.purevision.camera", qos: .userInitiated)
-    private var videoConnection: AVCaptureConnection?
     private let outputDelegate: CameraOutputDelegate
 
     init(delegate: CameraOutputDelegate) {
         self.outputDelegate = delegate
         super.init()
-        checkAuthorization()
+        setupCamera()
     }
 
     func checkAuthorization() {
-        authorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
-        switch authorizationStatus {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        DispatchQueue.main.async {
+            self.authorizationStatus = status
+        }
+
+        switch status {
         case .authorized:
-            break
+            startSession()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 DispatchQueue.main.async {
                     self?.authorizationStatus = granted ? .authorized : .denied
                     if granted {
-                        self?.setupCamera()
+                        self?.startSession()
                     }
                 }
             }
@@ -63,24 +66,21 @@ class CameraManager: NSObject, ObservableObject {
             session.addOutput(videoOutput)
         }
 
-        videoConnection = videoOutput.connection(with: .video)
-        videoConnection?.videoOrientation = .portrait
+        if let connection = videoOutput.connection(with: .video) {
+            if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+        }
 
         session.commitConfiguration()
     }
 
     func startSession() {
-        guard authorizationStatus == .authorized else {
-            checkAuthorization()
-            return
-        }
-
-        if !session.isRunning {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.session.startRunning()
-                DispatchQueue.main.async {
-                    self?.isRunning = true
-                }
+        guard !session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.session.startRunning()
+            DispatchQueue.main.async {
+                self?.isRunning = true
             }
         }
     }
@@ -88,7 +88,9 @@ class CameraManager: NSObject, ObservableObject {
     func stopSession() {
         if session.isRunning {
             session.stopRunning()
-            isRunning = false
+            DispatchQueue.main.async {
+                self.isRunning = false
+            }
         }
     }
 
@@ -107,10 +109,17 @@ class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        videoConnection?.videoOrientation = .portrait
+        if let connection = videoOutput.connection(with: .video) {
+            if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+        }
+
         session.commitConfiguration()
 
-        cameraPosition = newPosition
+        DispatchQueue.main.async {
+            self.cameraPosition = newPosition
+        }
     }
 
     private func cameraDevice(position: AVCaptureDevice.Position) -> AVCaptureDevice? {
@@ -121,7 +130,11 @@ class CameraManager: NSObject, ObservableObject {
 class CameraOutputDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, ObservableObject {
     @Published var latestPixelBuffer: CVPixelBuffer?
 
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         DispatchQueue.main.async {
             self.latestPixelBuffer = pixelBuffer

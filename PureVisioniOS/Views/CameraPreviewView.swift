@@ -2,13 +2,13 @@ import SwiftUI
 import AVFoundation
 
 struct CameraPreviewView: UIViewRepresentable {
-    let cameraManager: CameraManager
+    let session: AVCaptureSession
 
     func makeUIView(context: Context) -> PreviewUIView {
         let view = PreviewUIView()
         view.backgroundColor = .black
 
-        let previewLayer = AVCaptureVideoPreviewLayer(session: cameraManager.session)
+        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspectFill
         view.layer.addSublayer(previewLayer)
         view.previewLayer = previewLayer
@@ -17,7 +17,9 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
-        uiView.previewLayer?.frame = uiView.bounds
+        DispatchQueue.main.async {
+            uiView.previewLayer?.frame = uiView.bounds
+        }
     }
 }
 

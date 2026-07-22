@@ -2,52 +2,12 @@ import Foundation
 import Vision
 import CoreImage
 import UIKit
-import Accelerate
 
 class CensorProcessor {
 
     static let shared = CensorProcessor()
 
     private let context = CIContext(options: [.useSoftwareRenderer: false])
-
-    func processFrame(
-        pixelBuffer: CVPixelBuffer,
-        detections: [DetectionResult],
-        censorType: CensorType,
-        intensity: Double
-    ) -> CVPixelBuffer? {
-        var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-
-        for detection in detections {
-            let rect = detection.boundingBox
-            guard let cropped = ciImage.cropped(to: rect) else { continue }
-
-            let censored = applyCensor(
-                to: cropped,
-                type: censorType,
-                intensity: intensity
-            )
-
-            ciImage = censored.composited(over: ciImage)
-        }
-
-        var outputBuffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(
-            nil,
-            CVPixelBufferPool(nil),
-            &outputBuffer
-        )
-
-        if outputBuffer == nil {
-            outputBuffer = pixelBuffer
-        }
-
-        if let output = outputBuffer {
-            context.render(ciImage, to: output)
-        }
-
-        return outputBuffer
-    }
 
     func processImage(
         _ image: UIImage,
@@ -57,102 +17,106 @@ class CensorProcessor {
     ) -> UIImage? {
         guard let cgImage = image.cgImage else { return nil }
 
-        var ciImage = CIImage(cgImage: cgImage)
-        let scaleX = ciImage.extent.width / cgImage.width
-        let scaleY = ciImage.extent.height / cgImage.height
+        var currentImage = CIImage(cgImage: cgImage)
+        let imageWidth = currentImage.extent.width
+        let imageHeight = currentImage.extent.height
 
         for detection in detections {
             let box = detection.boundingBox
-            let scaledRect = CGRect(
-                x: box.origin.x * ciImage.extent.width,
-                y: box.origin.y * ciImage.extent.height,
-                width: box.width * ciImage.extent.width,
-                height: box.height * ciImage.extent.height
-            )
 
-            guard let cropped = ciImage.cropped(to: scaledRect) else { continue }
+            let rectX = box.origin.x * imageWidth
+            let rectY = (1.0 - box.origin.y - box.height) * imageHeight
+            let rectW = box.width * imageWidth
+            let rectH = box.height * imageHeight
 
-            let censored = applyCensor(
-                to: cropped,
-                type: censorType,
-                intensity: intensity
-            )
+            let cropRect = CGRect(x: rectX, y: rectY, width: rectW, height: rectH)
+                .intersection(currentImage.extent)
 
-            ciImage = censored.applyingFilter("CILanczosScaleTransform", parameters: [
-                kCIInputScaleKey: 1.0
-            ]).composited(over: ciImage)
+            guard cropRect.width > 0, cropRect.height > 0 else { continue }
 
-            ciImage = ciImage.cropped(to: ciImage.extent)
+            guard let cropped = currentImage.cropped(to: cropRect) else { continue }
+
+            let censored = applyCensor(to: cropped, type: censorType, intensity: intensity)
+                .cropped(to: CGRect(x: 0, y: 0, width: cropRect.width, height: cropRect.height))
 
             var transform = CGAffineTransform.identity
-            transform = transform.translatedBy(x: -scaledRect.origin.x, y: -scaledRect.origin.y)
-            let censoredMoved = censored.transformed(by: transform)
+            transform = transform.translatedBy(x: cropRect.origin.x, y: cropRect.origin.y)
+            let positioned = censored.transformed(by: transform)
 
-            let resultImage = censoredMoved.composited(over: ciImage)
-            ciImage = resultImage
+            currentImage = positioned.composited(over: currentImage)
         }
 
-        guard let outputCGImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            return nil
+        guard let outputCGImage = context.createCGImage(currentImage, from: currentImage.extent) else {
+            return image
         }
 
-        return UIImage(cgImage: outputCGImage, scale: image.scale, orientation: image.imageOrientation)
+        return UIImage(
+            cgImage: outputCGImage,
+            scale: image.scale,
+            orientation: image.imageOrientation
+        )
     }
 
     private func applyCensor(to image: CIImage, type: CensorType, intensity: Double) -> CIImage {
+        let extent = image.extent
+
         switch type {
         case .blur:
-            let radius = 20.0 * intensity
-            return image.applyingGaussianBlur2D(sigma: radius)
-                .cropped(to: image.extent)
+            let radius = max(5.0, 25.0 * intensity)
+            return image
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+                .cropped(to: extent)
 
         case .pixelate:
-            let scale = max(0.02, 0.1 / intensity)
-            let scaled = image
+            let inputScale = max(0.02, 0.08 / intensity)
+            let downscaled = image
                 .applyingFilter("CILanczosScaleTransform", parameters: [
-                    kCIInputScaleKey: scale
+                    kCIInputScaleKey: inputScale
                 ])
-            return scaled
+            return downscaled
                 .applyingFilter("CILanczosScaleTransform", parameters: [
-                    kCIInputScaleKey: 1.0 / scale
+                    kCIInputScaleKey: 1.0 / inputScale
                 ])
-                .cropped(to: image.extent)
+                .cropped(to: extent)
 
         case .mosaic:
-            let blockSize = max(4, Int(12.0 * intensity))
-            return applyMosaic(to: image, blockSize: blockSize)
+            return applyMosaicFilter(to: image, intensity: intensity)
 
         case .blackBar:
-            let barHeight = image.extent.height * 0.3
+            let barHeight = extent.height * min(0.5, 0.25 + 0.25 * intensity)
             let barRect = CGRect(
                 x: 0,
-                y: (image.extent.height - barHeight) / 2,
-                width: image.extent.width,
+                y: (extent.height - barHeight) / 2,
+                width: extent.width,
                 height: barHeight
             )
-            let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
+            let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1))
                 .cropped(to: barRect)
             return black.composited(over: image)
 
         case .darken:
+            let amount = min(1.0, 0.8 * intensity)
             return image
                 .applyingFilter("CIColorControls", parameters: [
-                    kCIInputBrightnessKey: -0.8 * intensity
+                    kCIInputBrightnessKey: -amount
                 ])
-                .cropped(to: image.extent)
+                .cropped(to: extent)
         }
     }
 
-    private func applyMosaic(to image: CIImage, blockSize: Int) -> CIImage {
+    private func applyMosaicFilter(to image: CIImage, intensity: Double) -> CIImage {
         let extent = image.extent
-        guard let cgImage = CIContext().createCGImage(image, from: extent) else {
+        let pixelSize = max(4, Int(16.0 / intensity))
+
+        guard let cgImage = context.createCGImage(image, from: extent) else {
             return image
         }
 
         let width = Int(extent.width)
         let height = Int(extent.height)
 
-        guard let data = cgImage.dataProvider?.data,
+        guard let dataProvider = cgImage.dataProvider,
+              let data = dataProvider.data,
               let ptr = CFDataGetBytePtr(data) else {
             return image
         }
@@ -161,30 +125,38 @@ class CensorProcessor {
         let bitsPerPixel = cgImage.bitsPerPixel
         let bytesPerPixel = bitsPerPixel / 8
 
-        var mosaicData = [UInt8](repeating: 0, count: width * height * 4)
+        var outputData = [UInt8](repeating: 0, count: width * height * 4)
 
-        for y in stride(from: 0, to: height, by: blockSize) {
-            for x in stride(from: 0, to: width, by: blockSize) {
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
                 let srcOffset = y * bytesPerRow + x * bytesPerPixel
                 let r = ptr[srcOffset]
-                let g = ptr[srcOffset + 1]
-                let b = ptr[srcOffset + 2]
+                let g = bytesPerPixel > 1 ? ptr[srcOffset + 1] : r
+                let b = bytesPerPixel > 2 ? ptr[srcOffset + 2] : r
 
-                for dy in 0..<blockSize where y + dy < height {
-                    for dx in 0..<blockSize where x + dx < width {
+                var dy = 0
+                while dy < pixelSize && y + dy < height {
+                    var dx = 0
+                    while dx < pixelSize && x + dx < width {
                         let dstOffset = ((y + dy) * width + (x + dx)) * 4
-                        mosaicData[dstOffset] = r
-                        mosaicData[dstOffset + 1] = g
-                        mosaicData[dstOffset + 2] = b
-                        mosaicData[dstOffset + 3] = 255
+                        outputData[dstOffset] = r
+                        outputData[dstOffset + 1] = g
+                        outputData[dstOffset + 2] = b
+                        outputData[dstOffset + 3] = 255
+                        dx += 1
                     }
+                    dy += 1
                 }
+                x += pixelSize
             }
+            y += pixelSize
         }
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let mosaicContext = CGContext(
-            data: &mosaicData,
+            data: &outputData,
             width: width,
             height: height,
             bitsPerComponent: 8,
@@ -195,6 +167,6 @@ class CensorProcessor {
             return image
         }
 
-        return CIImage(cgImage: mosaicCG)
+        return CIImage(cgImage: mosaicCG).cropped(to: extent)
     }
 }
