@@ -34,7 +34,7 @@ class CensorProcessor {
 
             guard cropRect.width > 0, cropRect.height > 0 else { continue }
 
-            guard let cropped = currentImage.cropped(to: cropRect) else { continue }
+            let cropped = currentImage.cropped(to: cropRect)
 
             let censored = applyCensor(to: cropped, type: censorType, intensity: intensity)
                 .cropped(to: CGRect(x: 0, y: 0, width: cropRect.width, height: cropRect.height))
